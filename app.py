@@ -1,11 +1,3 @@
-import os
-from decouple import AutoConfig
-config = AutoConfig(search_path='/Users/akshay/Work/github/genAIPG/.env')
-
-os.environ["TAVILY_API_KEY"] = config("TAVILY_API_KEY")
-os.environ["GOOGLE_API_KEY"] = config("GOOGLE_API_KEY")
-
-
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import time

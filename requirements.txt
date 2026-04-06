@@ -3,8 +3,6 @@ arxiv
 biopython
 chromadb
 cohere
-crewai==0.51.1
-crewai-tools==0.12.0
 docx2txt
 faiss-cpu
 google-generativeai
