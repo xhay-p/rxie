@@ -12,7 +12,7 @@ st.set_page_config(
 from pydantic import BaseModel, Field
 from langchain_community.document_loaders import WebBaseLoader
 import bs4
-from typing import List, Tuple
+from typing import Any, List, Tuple
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -25,6 +25,39 @@ MODEL_OPTIONS = [
     "gemini-3.1-flash-lite-preview",
     "gemini-3-flash-preview",
 ]
+
+
+def _message_content_to_str(content: Any) -> str:
+    """Gemini/LangChain may return str or list/tuple of blocks (dict or objects); normalize to one string."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    # Gemini often returns a tuple of blocks, not a list — must handle both
+    if isinstance(content, (list, tuple)):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if text is not None:
+                    parts.append(str(text))
+                else:
+                    parts.append(str(block))
+            else:
+                text = getattr(block, "text", None) or getattr(block, "content", None)
+                if text is not None:
+                    parts.append(str(text))
+                else:
+                    parts.append(str(block))
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("content")
+        if text is not None:
+            return str(text)
+    return str(content)
+
 
 def load_doc_from_urls(urls: List[str], tags: List[str], tag_classes: List[str]):
     from bs4 import BeautifulSoup
@@ -218,9 +251,8 @@ def arxiv_daily_trend_analysis(model_name):
     ])
 
     result = trend_chain.invoke({"input": formatted_input, "date": time.strftime("%Y-%m-%d")})
-    
-    # Safely extract content
-    output = result.content if hasattr(result, 'content') else str(result)
+    raw = result.content if hasattr(result, "content") else result
+    output = _message_content_to_str(raw)
     print(f"Analysis complete. Output length: {len(output)} characters")
     
     return output
