@@ -31,6 +31,7 @@ transformers
 unstructured
 xmltodict
 streamlit
+streamlit-autorefresh
 plotly
 pandas
 selenium
