@@ -3,7 +3,6 @@ from decouple import AutoConfig
 config = AutoConfig(search_path='/Users/akshay/Work/github/genAIPG/.env')
 
 os.environ["TAVILY_API_KEY"] = config("TAVILY_API_KEY")
-os.environ["OPENAI_API_KEY"] = config("OPENAI_API_KEY")
 os.environ["GOOGLE_API_KEY"] = config("GOOGLE_API_KEY")
 
 
@@ -23,7 +22,6 @@ from langchain_community.document_loaders import WebBaseLoader
 import bs4
 from typing import List, Tuple
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Configuration
@@ -31,12 +29,10 @@ temp = 0.0
 top_k = 10
 max_tokens = 20000
 
-MODEL_OPTIONS = {
-    "gemini-3.1-flash-lite-preview": "google",
-    "gemini-3-flash-preview": "google",
-    "gpt-5-mini": "openai",
-    "gpt-5.4-nano": "openai",
-}
+MODEL_OPTIONS = [
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+]
 
 def load_doc_from_urls(urls: List[str], tags: List[str], tag_classes: List[str]):
     from bs4 import BeautifulSoup
@@ -180,19 +176,13 @@ Below are the scraped arXiv paper details:
 Today's date: **{date}**""")
     ])
 
-    provider = MODEL_OPTIONS[model_name]
-    if provider == "openai":
-        llm = ChatOpenAI(
-            model=model_name,
-        )
-    else:
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temp,
-            max_tokens=max_tokens,
-            timeout=None,
-            max_retries=2,
-        )
+    llm = ChatGoogleGenerativeAI(
+        model=model_name,
+        temperature=temp,
+        max_tokens=max_tokens,
+        timeout=None,
+        max_retries=2,
+    )
 
     trend_chain = trend_prompt | llm
 
@@ -223,10 +213,10 @@ def run():
         st.markdown("### Settings")
         selected_model = st.selectbox(
             "Model",
-            options=list(MODEL_OPTIONS.keys()),
+            options=MODEL_OPTIONS,
             index=0,
         )
-        st.caption(f"**Provider:** `{MODEL_OPTIONS[selected_model]}`")
+        st.caption("**Provider:** `google`")
         st.caption(f"**Temperature:** `{temp}`")
         st.caption(f"**Max tokens:** `{max_tokens}`")
         st.divider()
