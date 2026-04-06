@@ -31,6 +31,8 @@ def load_doc_from_urls(urls: List[str], tags: List[str], tag_classes: List[str])
     import requests
 
     docs = []
+    seen_urls = set()  # Track seen URLs to prevent duplicates
+    
     for url in urls:
         response = requests.get(url)
         if response.status_code == 200:
@@ -43,6 +45,11 @@ def load_doc_from_urls(urls: List[str], tags: List[str], tag_classes: List[str])
                 link = dt.find("a", href=True)
                 if link and "/abs/" in link["href"]:
                     arxiv_url = f"https://arxiv.org{link['href']}"  # Construct the full URL
+
+                    # Skip if we've already seen this paper
+                    if arxiv_url in seen_urls:
+                        continue
+                    seen_urls.add(arxiv_url)
 
                     # Extract the title, authors, and subjects from the <dd> tag
                     title = dd.find("div", class_="list-title")
@@ -57,6 +64,8 @@ def load_doc_from_urls(urls: List[str], tags: List[str], tag_classes: List[str])
                         "subjects": subjects.get_text(strip=True).replace("Subjects:", "") if subjects else "No subjects",
                     }
                     docs.append(doc)
+    
+    print(f"Loaded {len(docs)} unique documents (deduped from multiple categories)")
     return docs
 
 # Run the autorefresh about every 6000 milliseconds (6 seconds)
@@ -191,14 +200,30 @@ def arxiv_daily_trend_analysis(model_name):
         tag_classes=['meta'] 
     )
 
-    print(f"Number of documents: {len(docs)}")  
+    if not docs:
+        return "Error: No documents loaded. Please check the URLs and network connection."
+
+    print(f"Number of unique documents: {len(docs)}")  
 
     trend_chain = create_chain(model_name)
 
-    result = trend_chain.invoke({"input": docs, "date": time.strftime("%Y-%m-%d")})
-    print(result.content)
+    # Format the input more clearly for the LLM
+    formatted_input = "\n\n".join([
+        f"**Paper {i+1}:**\n"
+        f"- Title: {doc['title']}\n"
+        f"- Authors: {doc['authors']}\n"
+        f"- URL: {doc['arxiv_url']}\n"
+        f"- Subjects: {doc['subjects']}"
+        for i, doc in enumerate(docs)
+    ])
 
-    return result.content
+    result = trend_chain.invoke({"input": formatted_input, "date": time.strftime("%Y-%m-%d")})
+    
+    # Safely extract content
+    output = result.content if hasattr(result, 'content') else str(result)
+    print(f"Analysis complete. Output length: {len(output)} characters")
+    
+    return output
 
 def run():
     with st.sidebar:
@@ -224,8 +249,15 @@ def run():
 
     if analyse:
         with st.spinner("Fetching papers & analysing trends — this may take a minute..."):
-            result = arxiv_daily_trend_analysis(selected_model)
-        st.markdown(result)
+            try:
+                result = arxiv_daily_trend_analysis(selected_model)
+                if result.startswith("Error:"):
+                    st.error(result)
+                else:
+                    st.markdown(result)
+            except Exception as e:
+                st.error(f"An error occurred during analysis: {str(e)}")
+                print(f"Error: {e}")
     else:
         st.info("Select a model and click **Analyse Trends** in the sidebar to start.")
 
