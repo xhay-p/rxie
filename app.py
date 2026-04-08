@@ -12,9 +12,109 @@ st.set_page_config(
 from pydantic import BaseModel, Field
 from langchain_community.document_loaders import WebBaseLoader
 import bs4
-from typing import Any, List, Tuple
+from typing import Any, Iterable, List, Tuple
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+try:
+    from google.api_core import exceptions as google_api_exceptions
+except ImportError:
+    google_api_exceptions = None  # type: ignore[assignment]
+
+# Shown when Google's API is overloaded, rate-limited, or hit by concurrent load
+GOOGLE_OVERLOAD_MESSAGE = (
+    "Too many requests at the same time from multiple users. "
+    "Please try again in a little while or use a different model."
+)
+
+
+def _exception_chain(exc: BaseException) -> Iterable[BaseException]:
+    """Yield exc and linked causes/contexts (deduped by id) for wrapped API errors."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        yield e
+        e = e.__cause__ or e.__context__
+
+
+def _combined_error_text(exc: BaseException) -> str:
+    chunks: List[str] = []
+    for e in _exception_chain(exc):
+        chunks.append(f"{type(e).__name__} {e!s}")
+    return " ".join(chunks).lower()
+
+
+def is_google_overload_or_rate_limit_error(exc: BaseException) -> bool:
+    """True for 429/503, quota, resource exhaustion, and similar overload signals."""
+    for e in _exception_chain(exc):
+        if google_api_exceptions is not None:
+            if isinstance(
+                e,
+                (
+                    google_api_exceptions.ResourceExhausted,
+                    google_api_exceptions.TooManyRequests,
+                    google_api_exceptions.ServiceUnavailable,
+                ),
+            ):
+                return True
+        name = type(e).__name__.lower()
+        if name in ("resourceexhausted", "toomanyrequests", "serviceunavailable"):
+            return True
+
+    text = _combined_error_text(exc)
+    markers = (
+        " 429",
+        " 503",
+        "429 ",
+        "503 ",
+        "resource exhausted",
+        "resource_exhausted",
+        "quota",
+        "rate limit",
+        "too many requests",
+        "overloaded",
+        "unavailable",
+        "try again later",
+        "exceeded your current quota",
+        "capacity",
+        "concurrent request",
+        "deadline exceeded",  # often transient under load
+    )
+    return any(m in text for m in markers)
+
+
+def is_google_auth_error(exc: BaseException) -> bool:
+    text = _combined_error_text(exc)
+    return any(
+        m in text
+        for m in (
+            "api key",
+            "invalid api",
+            "permission denied",
+            " 401",
+            " 403",
+            "401 ",
+            "403 ",
+            "authentication",
+            "not authorized",
+        )
+    )
+
+
+def format_google_model_error(exc: BaseException) -> str:
+    """User-facing message for non-overload Google/model failures."""
+    if is_google_auth_error(exc):
+        return (
+            "Authentication or API key issue: check that `GOOGLE_API_KEY` is set "
+            "correctly in your environment and has access to the selected model."
+        )
+    # Short, readable fallback (first meaningful line from the chain)
+    for e in _exception_chain(exc):
+        msg = str(e).strip()
+        if msg:
+            return f"The model request failed: {msg}"
+    return "The model request failed due to an unexpected error."
 
 # Configuration
 temp = 0.0
@@ -288,8 +388,11 @@ def run():
                 else:
                     st.markdown(result)
             except Exception as e:
-                st.error(f"An error occurred during analysis: {str(e)}")
-                print(f"Error: {e}")
+                if is_google_overload_or_rate_limit_error(e):
+                    st.error(GOOGLE_OVERLOAD_MESSAGE)
+                else:
+                    st.error(format_google_model_error(e))
+                print(f"Error ({type(e).__name__}): {e}")
     else:
         st.info("Select a model and click **Analyse Trends** in the sidebar to start.")
 
