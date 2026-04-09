@@ -1,7 +1,9 @@
+import json
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 st.set_page_config(
     page_title="arXiv Trend Analyser",
@@ -125,6 +127,91 @@ MODEL_OPTIONS = [
     "gemini-3.1-flash-lite-preview",
     "gemini-3-flash-preview",
 ]
+
+CACHE_TTL = timedelta(hours=12)
+CACHE_FILE = Path(__file__).resolve().parent / ".cache" / "arxiv_trend_analysis.json"
+
+
+def _load_cache_blob() -> dict:
+    if not CACHE_FILE.exists():
+        return {"version": 1, "entries": {}}
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+            return {"version": 1, "entries": {}}
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {"version": 1, "entries": {}}
+
+
+def _atomic_write_cache(blob: dict) -> None:
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CACHE_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(blob, f, ensure_ascii=False, indent=2)
+    tmp.replace(CACHE_FILE)
+
+
+def _parse_generated_at(raw: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def get_fresh_cache(model_name: str) -> tuple[str, datetime] | None:
+    """Return (response, generated_at_utc) if a valid cache entry exists, else None."""
+    blob = _load_cache_blob()
+    entry = blob["entries"].get(model_name)
+    if not isinstance(entry, dict):
+        return None
+    text = entry.get("response")
+    raw_ts = entry.get("generated_at")
+    if not isinstance(text, str) or not text.strip() or not isinstance(raw_ts, str):
+        return None
+    generated_at = _parse_generated_at(raw_ts)
+    if generated_at is None:
+        return None
+    age = datetime.now(timezone.utc) - generated_at
+    if age >= CACHE_TTL:
+        return None
+    return (text, generated_at)
+
+
+def save_analysis_cache(model_name: str, response: str) -> None:
+    if not response.strip() or response.startswith("Error:"):
+        return
+    blob = _load_cache_blob()
+    blob.setdefault("version", 1)
+    blob.setdefault("entries", {})
+    blob["entries"][model_name] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "response": response,
+    }
+    _atomic_write_cache(blob)
+
+
+def format_cache_footer_message(generated_at: datetime) -> str:
+    now = datetime.now(timezone.utc)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    else:
+        generated_at = generated_at.astimezone(timezone.utc)
+    delta = now - generated_at
+    total_seconds = max(0, int(delta.total_seconds()))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, _ = divmod(rem, 60)
+    hr_label = "hr" if hours == 1 else "hrs"
+    min_label = "min" if minutes == 1 else "mins"
+    return (
+        "Cached response: this analysis was generated "
+        f"{hours} {hr_label} {minutes} {min_label} ago. "
+        "arXiv listings refresh daily, so it should still be broadly relevant."
+    )
 
 
 def _message_content_to_str(content: Any) -> str:
@@ -380,13 +467,31 @@ def run():
     st.divider()
 
     if analyse:
-        with st.spinner("Fetching papers & analysing trends — this may take a minute..."):
+        cache_hit = get_fresh_cache(selected_model)
+        spinner_label = (
+            "Loading cached analysis…"
+            if cache_hit
+            else "Fetching papers & analysing trends — this may take a minute..."
+        )
+        with st.spinner(spinner_label):
             try:
-                result = arxiv_daily_trend_analysis(selected_model)
+                if cache_hit:
+                    result = cache_hit[0]
+                    cache_generated_at = cache_hit[1]
+                    used_cache = True
+                else:
+                    result = arxiv_daily_trend_analysis(selected_model)
+                    cache_generated_at = None
+                    used_cache = False
+                    if not result.startswith("Error:"):
+                        save_analysis_cache(selected_model, result)
                 if result.startswith("Error:"):
                     st.error(result)
                 else:
                     st.markdown(result)
+                    if used_cache and cache_generated_at is not None:
+                        st.divider()
+                        st.info(format_cache_footer_message(cache_generated_at))
             except Exception as e:
                 if is_google_overload_or_rate_limit_error(e):
                     st.error(GOOGLE_OVERLOAD_MESSAGE)
